@@ -1,0 +1,15 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# Runtime artifacts (DB lives in ~/Library/Application Support/Atlas, not here)
+*.log
+engine/daily_job.log
+
+# Local editor/agent state (launch.json IS tracked; local overrides are not)
+.claude/settings.local.json
