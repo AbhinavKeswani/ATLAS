@@ -321,10 +321,11 @@ VIEWS.money = async () => {
         <div class="sublabel">full period · ${(p.reg_hours + p.ot_hours).toFixed(2)} h</div></div>
     </div>
     <div class="grid cols-2" style="margin-top:16px">
-      <div class="card glass"><div class="ch">Withholding estimate (this period)</div>
-        ${taxRow("Gross", p.gross)}${taxRow("Federal", -p.federal)}${taxRow("FICA", -p.fica)}${taxRow("NY State", -p.state)}${p.city?taxRow("NYC", -p.city):""}
+      <div class="card glass"><div class="ch">Take-home (this period)</div>
+        ${taxRow("Gross", p.gross)}
+        ${taxRow(`Tax · ${(( p.effective_rate||0)*100).toFixed(2)}% effective`, -p.total_tax)}
         <div style="border-top:1px solid var(--hair);margin:8px 0"></div>${taxRow("Net", p.net, true)}
-        <div class="sublabel" style="margin-top:8px;color:var(--dim)">Estimate via annualized percentage method — not payroll-exact. Set rate & payday in Settings.</div></div>
+        <div class="sublabel" style="margin-top:8px;color:var(--dim)">${p.mode==="effective"?"Flat effective NYC rate from your actual paystub.":"Bracket estimate — set an effective rate in Settings for paystub accuracy."} Adjust in Settings.</div></div>
       <div class="card glass"><div class="ch">Hours by week — this period</div>
         ${weeksInPeriod(pay.period_start, pay.period_end).map(w => { const ov = hw[w.start] || {}; return `
           <div class="row" style="margin-bottom:10px"><div style="flex:1"><b>${w.label}</b></div>
@@ -341,9 +342,9 @@ VIEWS.money = async () => {
           <div class="check-row ${c.state}">
             <div class="ck-main"><b>${fmtDate(c.period_start)} – ${fmtDate(c.period_end)}</b>
               <span class="sublabel">payday ${fmtDate(c.payday)} · ${(c.reg_hours+c.ot_hours).toFixed(2)} h${c.ot_hours?` (${c.ot_hours} OT)`:""}</span></div>
-            <div class="ck-amt">${money(c.net)}</div>
+            <div class="ck-amt">${money(c.state==="deposited"&&c.deposit?c.deposit.amount:c.net)}${c.state==="deposited"&&c.deposit&&!c.deposit.actual?"":c.state==="deposited"?'<span class="sublabel" style="display:block">actual</span>':'<span class="sublabel" style="display:block">est.</span>'}</div>
             ${c.state==="unpaid"
-              ?`<label class="toggle" title="Money hit the bank?"><input type="checkbox" data-deposit="${c.period_start}"/><span class="sw"></span></label>`
+              ?`<label class="toggle" title="Money hit the bank?"><input type="checkbox" data-deposit="${c.period_start}" data-net="${c.net}"/><span class="sw"></span></label>`
               :`<span class="chip src" title="Deposited to ${esc(c.deposit?.account||"")}">in bank ✓</span>
                 <button class="del" style="opacity:.6" data-undo="${c.period_start}" title="Undo deposit">${ICONS.trash}</button>`}
           </div>`).join(""):`<div class="sublabel" style="color:var(--dim)">No completed pay periods with hours yet.</div>`}
@@ -395,10 +396,14 @@ VIEWS.money = async () => {
   $("#wl-refresh").onclick = async (e) => { e.target.disabled=true; e.target.innerHTML='<span class="spinner"></span>'; try{ const rr=await api("/watchlist/refresh",{method:"POST"}); toast(`Priced ${rr.updated} pick${rr.updated===1?"":"s"}`); }catch(err){ toast(err.message,"err"); } render("money"); };
   // unpaid checks: toggle → deposit into cash; trash on a deposited row undoes it
   el("view-money").querySelectorAll("[data-deposit]").forEach(t => t.onchange = async () => {
+    const est = t.dataset.net;
+    const val = prompt("Actual net that hit the bank?\nFrom your paystub — Atlas's withholding is only an estimate.\nLeave as-is to use the estimate.", est);
+    if (val === null) { t.checked = false; return; }          // cancelled
+    const amount = parseFloat(val);
     const acct = $("#chk-acct");
     try {
-      const r = await api("/pay/checks/deposit", { method: "POST", body: { period_start: t.dataset.deposit, account_id: acct ? +acct.value : null } });
-      toast(`${money(r.deposited)} → ${r.account}`);
+      const r = await api("/pay/checks/deposit", { method: "POST", body: { period_start: t.dataset.deposit, account_id: acct ? +acct.value : null, amount: isFinite(amount) ? amount : null } });
+      toast(`${money(r.deposited)} → ${r.account}${r.actual ? " (actual)" : ""}`);
     } catch (e) { toast(e.message, "err"); }
     render("money");
   });
@@ -563,9 +568,13 @@ VIEWS.settings = async () => {
       <div class="card glass"><div class="ch">Pay</div>
         <label class="fld">Hourly rate ($)<input id="s-rate" type="number" step="0.01" value="${c.rate}"/></label>
         <label class="fld" style="margin-top:10px">OT multiplier<input id="s-ot" type="number" step="0.1" value="${c.ot_multiplier}"/></label>
-        <label class="fld" style="margin-top:10px">Anchor payday (a known payday)<input id="s-anchor" type="date" value="${c.anchor_payday||""}"/></label>
+        <label class="fld" style="margin-top:10px">Pay schedule<select id="s-schedule">
+          <option value="semimonthly" ${c.pay_schedule==="semimonthly"?"selected":""}>Semi-monthly (15th & 30th)</option>
+          <option value="biweekly" ${c.pay_schedule!=="semimonthly"?"selected":""}>Biweekly (every 14 days)</option></select></label>
+        <label class="fld" style="margin-top:10px">Anchor payday (biweekly only)<input id="s-anchor" type="date" value="${c.anchor_payday||""}"/></label>
         <label class="fld" style="margin-top:10px">Unpaid break (min/day)<input id="s-break" type="number" value="${c.default_break_min}"/></label>
-        <label class="toggle" style="margin-top:14px"><input type="checkbox" id="s-nyc" ${c.nyc_resident?"checked":""}/><span class="sw"></span> NYC resident (city tax)</label>
+        <label class="fld" style="margin-top:10px">Effective tax rate (%) — all-in from your paystub<input id="s-efftax" type="number" step="0.01" value="${c.effective_tax_rate!=null?(c.effective_tax_rate*100).toFixed(2):""}" placeholder="e.g. 18.76"/></label>
+        <div class="sublabel" style="color:var(--dim);margin-top:4px">Replaces the bracket estimate (fed + FICA + NY + NYC). Leave blank to estimate.</div>
         <label class="toggle" style="margin-top:12px"><input type="checkbox" id="s-sched" ${c.use_default_schedule?"checked":""}/><span class="sw"></span> Auto-fill default schedule (Mon–Thu 8–8, Fri 8–4)</label>
         <button class="btn-flow" id="s-save" style="margin-top:16px">Save pay settings</button></div>
       <div class="card glass"><div class="ch">Health, reminders & data</div>
@@ -593,7 +602,8 @@ VIEWS.settings = async () => {
         }).join("")}</div>
     </div>`;
   $("#s-save").onclick = async () => {
-    await api("/pay/config", { method: "PUT", body: { rate: +$("#s-rate").value, ot_multiplier: +$("#s-ot").value, anchor_payday: $("#s-anchor").value || null, default_break_min: +$("#s-break").value || 0, nyc_resident: $("#s-nyc").checked, use_default_schedule: $("#s-sched").checked } });
+    const effPct = parseFloat($("#s-efftax").value);
+    await api("/pay/config", { method: "PUT", body: { rate: +$("#s-rate").value, ot_multiplier: +$("#s-ot").value, anchor_payday: $("#s-anchor").value || null, pay_schedule: $("#s-schedule").value, default_break_min: +$("#s-break").value || 0, effective_tax_rate: isFinite(effPct) ? effPct / 100 : null, use_default_schedule: $("#s-sched").checked } });
     toast("Pay settings saved");
   };
   $("#s-calsave").onclick = async () => { await api("/settings", { method: "PUT", body: { key: "calorie_target", value: +$("#s-cal").value } }); toast("Target saved"); };

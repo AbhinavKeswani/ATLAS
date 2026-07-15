@@ -67,12 +67,25 @@ class PayConfig:
     rate: float = 17.0
     ot_multiplier: float = 1.5
     ot_threshold: float = 40.0
-    anchor_payday: str | None = None  # a known payday, YYYY-MM-DD; defines 14-day cycle
+    anchor_payday: str | None = None  # biweekly only: a known payday, YYYY-MM-DD
     period_days: int = 14
+    # Days between a period ending and its payday landing (payroll lag).
+    pay_lag_days: int = 0
+    # "biweekly" (anchor + 14d) or "semimonthly" (work 1–15 paid on the 15th,
+    # work 16–EOM paid on the 30th, clamped to month end).
+    pay_schedule: str = "biweekly"
     state: str = "NY"
     nyc_resident: bool = False
+    # Flat all-in effective withholding rate (0–1) from an actual paystub. When set,
+    # it replaces the bracket estimate: tax = gross × rate. This is what actually gets
+    # withheld (fed + FICA + NY State + NYC), so it's more accurate than estimating.
+    effective_tax_rate: float | None = None
     default_break_min: int = 0
     use_default_schedule: bool = True
+
+    @property
+    def periods_per_year(self) -> int:
+        return 24 if self.pay_schedule == "semimonthly" else 26
 
     @classmethod
     def load(cls, store: Store) -> "PayConfig":
@@ -120,8 +133,17 @@ def _week_start(day: dt.date) -> dt.date:
 
 
 def estimate_withholding(gross_period: float, cfg: PayConfig) -> dict:
-    """Annualize the period gross and estimate per-period withholding."""
-    annual = gross_period * PERIODS_PER_YEAR
+    """Per-period withholding. A flat effective rate (from a real paystub) wins;
+    otherwise fall back to the annualized bracket estimate."""
+    if cfg.effective_tax_rate is not None:
+        total = round(gross_period * cfg.effective_tax_rate, 2)
+        return {
+            "mode": "effective", "effective_rate": cfg.effective_tax_rate,
+            "federal": None, "fica": None, "state": None, "city": None,
+            "total_tax": total, "net": round(gross_period - total, 2),
+        }
+    n_periods = cfg.periods_per_year
+    annual = gross_period * n_periods
 
     fed_taxable = max(0.0, annual - FED_STD_DEDUCTION_SINGLE)
     fed = _progressive_tax(fed_taxable, FED_BRACKETS_SINGLE)
@@ -132,13 +154,15 @@ def estimate_withholding(gross_period: float, cfg: PayConfig) -> dict:
     ny = _progressive_tax(ny_taxable, NY_BRACKETS_SINGLE) if cfg.state == "NY" else 0.0
     nyc = _progressive_tax(ny_taxable, NYC_BRACKETS_SINGLE) if cfg.nyc_resident else 0.0
 
-    per = lambda annual_amt: round(annual_amt / PERIODS_PER_YEAR, 2)
+    per = lambda annual_amt: round(annual_amt / n_periods, 2)
     federal = per(fed)
     fica = per(ss + medicare)
     state = per(ny)
     city = per(nyc)
     total = round(federal + fica + state + city, 2)
     return {
+        "mode": "estimate",
+        "effective_rate": round(total / gross_period, 4) if gross_period else 0.0,
         "federal": federal,
         "fica": fica,
         "state": state,
@@ -162,29 +186,88 @@ def current_period(cfg: PayConfig, today: dt.date) -> tuple[dt.date, dt.date, dt
     Paydays fall on anchor + 14·k. The anchor is treated as a period boundary;
     the running period is the 14-day block containing today, paid on its end date.
     """
+    if cfg.pay_schedule == "semimonthly":
+        return _semimonthly_period(today)
     anchor = dt.date.fromisoformat(cfg.anchor_payday) if cfg.anchor_payday else _default_anchor(today)
     span = cfg.period_days
     delta = (today - anchor).days
     k = delta // span  # floor, works for negatives too
     period_start = anchor + dt.timedelta(days=span * k)
-    period_end = period_start + dt.timedelta(days=span)  # exclusive; this is the payday
-    return period_start, period_end, period_end
+    period_end = period_start + dt.timedelta(days=span)  # exclusive boundary
+    payday = period_end + dt.timedelta(days=cfg.pay_lag_days)
+    return period_start, period_end, payday
 
 
-def _accrue(cfg: PayConfig, entries: dict[str, list[dict]], overrides: dict[str, dict], start: dt.date, end: dt.date) -> dict:
+def _month_end(d: dt.date) -> dt.date:
+    nxt = dt.date(d.year + (d.month == 12), (d.month % 12) + 1, 1)
+    return nxt - dt.timedelta(days=1)
+
+
+def _semimonthly_period(today: dt.date) -> tuple[dt.date, dt.date, dt.date]:
+    """Work 1–15 pays on the 15th; work 16–EOM pays on the 30th (clamped to EOM)."""
+    if today.day <= 15:
+        start = today.replace(day=1)
+        end = today.replace(day=16)                    # exclusive
+        payday = today.replace(day=15)
+    else:
+        start = today.replace(day=16)
+        eom = _month_end(today)
+        end = eom + dt.timedelta(days=1)               # exclusive
+        payday = min(today.replace(day=min(30, eom.day)), eom)
+    return start, end, payday
+
+
+def prev_period_start(cfg: PayConfig, start: dt.date) -> dt.date:
+    """The start of the pay period immediately before the one starting at `start`."""
+    if cfg.pay_schedule == "semimonthly":
+        if start.day == 16:
+            return start.replace(day=1)
+        prev_month_last = start - dt.timedelta(days=1)
+        return prev_month_last.replace(day=16)
+    return start - dt.timedelta(days=cfg.period_days)
+
+
+def period_bounds(cfg: PayConfig, start: dt.date) -> tuple[dt.date, dt.date]:
+    """(end_exclusive, payday) for the period starting at `start`."""
+    if cfg.pay_schedule == "semimonthly":
+        if start.day == 1:
+            return start.replace(day=16), start.replace(day=15)
+        eom = _month_end(start)
+        return eom + dt.timedelta(days=1), min(start.replace(day=min(30, eom.day)), eom)
+    end = start + dt.timedelta(days=cfg.period_days)
+    return end, end + dt.timedelta(days=cfg.pay_lag_days)
+
+
+def _accrue(cfg: PayConfig, entries: dict[str, list[dict]], overrides: dict[str, dict],
+            start: dt.date, end: dt.date, running_cutoff: dt.date | None = None) -> dict:
     """Sum hours by payroll week. A week with a manual override uses its explicit
     regular/overtime totals; otherwise hours come from daily entries + auto-fill and
-    are split at the 40h threshold."""
+    are split at the 40h threshold.
+
+    Two partial-week modes:
+    - Period boundary (running_cutoff=None): a Sun–Sat week only partly inside
+      [start, end) — e.g. a semi-monthly cut — is prorated by its days-in-window so
+      hours aren't double-counted across adjacent checks.
+    - Running-to-date (running_cutoff=today): override hours are ACTUAL hours worked
+      so far, so an override week that has started counts IN FULL (no calendar
+      proration); non-override days still only count through today via the day loop."""
     weeks: dict[dt.date, float] = {}
+    days_in: dict[dt.date, int] = {}
     for i in range((end - start).days):
         day = start + dt.timedelta(days=i)
         wk = _week_start(day)
         weeks[wk] = weeks.get(wk, 0.0) + hours_for_day(day, entries, cfg)
+        days_in[wk] = days_in.get(wk, 0) + 1
     reg = ot = 0.0
     for wk, hrs in weeks.items():
         ov = overrides.get(wk.isoformat())
         if ov:
-            reg += ov["regular"]; ot += ov["overtime"]
+            if running_cutoff is not None:
+                frac = 1.0 if wk <= running_cutoff else 0.0
+            else:
+                frac = min(1.0, days_in[wk] / 7.0)
+            reg += ov["regular"] * frac
+            ot += ov["overtime"] * frac
         else:
             reg += min(cfg.ot_threshold, hrs)
             ot += max(0.0, hrs - cfg.ot_threshold)
@@ -203,13 +286,20 @@ def compute_status(store: Store, today: dt.date | None = None) -> dict:
         entries.setdefault(r["work_date"], []).append(r)
     overrides = store.hours_weeks()
 
-    # Running = hours through today (period always contains today); projected = full period.
+    # Running = actual hours to date (override weeks that have started count in full);
+    # projected = the whole period.
     through = min(today + dt.timedelta(days=1), end)
-    running = _accrue(cfg, entries, overrides, start, through)
+    running = _accrue(cfg, entries, overrides, start, through, running_cutoff=today)
     projected = _accrue(cfg, entries, overrides, start, end)
 
     run_tax = estimate_withholding(running["gross"], cfg)
     proj_tax = estimate_withholding(projected["gross"], cfg)
+
+    # Semi-monthly paydays sit INSIDE the period (the 15th/30th); if today is past
+    # this period's payday, the next check the user sees is the following period's.
+    if next_payday < today:
+        nxt_start = end
+        _, next_payday = period_bounds(cfg, nxt_start)
 
     return {
         "period_start": start.isoformat(),
@@ -242,12 +332,16 @@ def pay_checks(store: Store, today: dt.date | None = None, lookback: int = 3) ->
     cfg = PayConfig.load(store)
     cur_start, cur_end, _ = current_period(cfg, today)
     status: dict = store.get_setting("check_status", {}) or {}
-    span = dt.timedelta(days=cfg.period_days)
 
+    # Walk back `lookback` completed periods using schedule-aware boundaries.
+    starts: list[dt.date] = []
+    s = cur_start
+    for _ in range(lookback):
+        s = prev_period_start(cfg, s)
+        starts.append(s)
     checks = []
-    for k in range(lookback, 0, -1):           # oldest completed first
-        start = cur_start - span * k
-        end = start + span
+    for start in reversed(starts):             # oldest completed first
+        end, payday = period_bounds(cfg, start)
         acc = _period_net(store, cfg, start, end)
         if acc["gross"] <= 0:
             continue                            # no hours that period — not a check
@@ -255,16 +349,17 @@ def pay_checks(store: Store, today: dt.date | None = None, lookback: int = 3) ->
         checks.append({
             "period_start": start.isoformat(),
             "period_end": (end - dt.timedelta(days=1)).isoformat(),
-            "payday": end.isoformat(),
+            "payday": payday.isoformat(),
             **acc,
             "state": "deposited" if st else "unpaid",
             "deposit": st,
         })
     cur = _period_net(store, cfg, cur_start, cur_end)
+    _, cur_payday = period_bounds(cfg, cur_start)
     current = {
         "period_start": cur_start.isoformat(),
         "period_end": (cur_end - dt.timedelta(days=1)).isoformat(),
-        "payday": cur_end.isoformat(),
+        "payday": cur_payday.isoformat(),
         **cur,
         "state": "accruing",
     }
@@ -272,14 +367,19 @@ def pay_checks(store: Store, today: dt.date | None = None, lookback: int = 3) ->
     return {"checks": checks, "current": current, "unpaid_total": unpaid_total}
 
 
-def deposit_check(store: Store, period_start: str, account_id: int | None) -> dict:
-    """Mark a period's check as hit-the-bank: credit a cash account, record status."""
+def deposit_check(store: Store, period_start: str, account_id: int | None,
+                  amount: float | None = None, gross: float | None = None) -> dict:
+    """Mark a period's check as hit-the-bank: credit a cash account, record status.
+
+    `amount` overrides the computed estimate with the ACTUAL net from a paystub
+    (Atlas's withholding is only an estimate), and `gross` records the actual gross."""
     import time as _t
 
     cfg = PayConfig.load(store)
     start = dt.date.fromisoformat(period_start)
-    end = start + dt.timedelta(days=cfg.period_days)
-    net = _period_net(store, cfg, start, end)["net"]
+    end, _payday = period_bounds(cfg, start)
+    est = _period_net(store, cfg, start, end)
+    net = round(float(amount), 2) if amount is not None else est["net"]
     status: dict = store.get_setting("check_status", {}) or {}
     if period_start in status:
         raise ValueError("already deposited")
@@ -289,9 +389,12 @@ def deposit_check(store: Store, period_start: str, account_id: int | None) -> di
     if acct is None:
         raise ValueError("no cash account to deposit into — add one on the Net Worth tab")
     store.update_account(acct["id"], balance=round(acct["balance"] + net, 2))
-    status[period_start] = {"amount": net, "account_id": acct["id"], "account": acct["name"], "ts": _t.time()}
+    status[period_start] = {
+        "amount": net, "gross": gross if gross is not None else est["gross"],
+        "actual": amount is not None, "account_id": acct["id"], "account": acct["name"], "ts": _t.time(),
+    }
     store.set_setting("check_status", status)
-    return {"deposited": net, "account": acct["name"]}
+    return {"deposited": net, "account": acct["name"], "actual": amount is not None}
 
 
 def undo_deposit(store: Store, period_start: str) -> dict:

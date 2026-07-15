@@ -62,7 +62,10 @@ class PayConfigBody(BaseModel):
     rate: float | None = None
     ot_multiplier: float | None = None
     anchor_payday: str | None = None
+    pay_schedule: str | None = None   # "biweekly" | "semimonthly"
+    pay_lag_days: int | None = None
     nyc_resident: bool | None = None
+    effective_tax_rate: float | None = None
     default_break_min: int | None = None
     use_default_schedule: bool | None = None
 
@@ -185,6 +188,8 @@ class HoursWeekBody(BaseModel):
 class CheckDepositBody(BaseModel):
     period_start: str          # ISO date of the pay period start
     account_id: int | None = None
+    amount: float | None = None   # actual net from a paystub (overrides estimate)
+    gross: float | None = None
 
 
 class DraftPatch(BaseModel):
@@ -1357,7 +1362,7 @@ def create_app() -> FastAPI:
     @app.post("/api/pay/checks/deposit")
     async def deposit_pay_check(body: CheckDepositBody) -> dict:
         try:
-            r = paycheck.deposit_check(store, body.period_start, body.account_id)
+            r = paycheck.deposit_check(store, body.period_start, body.account_id, body.amount, body.gross)
         except ValueError as e:
             raise HTTPException(400, str(e))
         bus.publish("networth_updated", {})
