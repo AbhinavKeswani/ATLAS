@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import gcal, gmail, google_auth, health, market_outlook, meetings, networth, paycheck, picks, portfolio, profile, profile_seed, reminders, resume, resume_corpus, resume_templates, soccer, soccer_lineups, yahoo
+from . import controller, gcal, gmail, google_auth, health, market_outlook, meetings, networth, paycheck, picks, portfolio, profile, profile_seed, reminders, resume, resume_corpus, resume_templates, soccer, soccer_lineups, yahoo
 from .bus import EventBus
 from .claude_bridge import (
     CALENDAR_COMMAND, ClaudeBridge, ClaudeError, DRAFT_REVISE,
@@ -149,6 +149,12 @@ class LiftBody(BaseModel):
 
 class HealthChatBody(BaseModel):
     message: str
+
+
+class CopilotBody(BaseModel):
+    message: str
+    view: str | None = None
+    tab_note: str | None = None
 
 
 class SettingBody(BaseModel):
@@ -1402,6 +1408,19 @@ def create_app() -> FastAPI:
             saved.append(w)
         bus.publish("pay_updated", {})
         return {"weeks": saved, "note": data.get("note"), "pay": paycheck.compute_status(store)}
+
+    @app.post("/api/copilot")
+    async def copilot(body: CopilotBody) -> dict:
+        bus.publish("claude_busy", {"task": "copilot"})
+        try:
+            r = await controller.run(store, claude, body.message, body.view, body.tab_note)
+        except ClaudeError as e:
+            raise HTTPException(502, f"Claude: {e}")
+        finally:
+            bus.publish("claude_idle", {})
+        if r.get("applied"):
+            bus.publish("copilot_applied", {})   # nudge open tabs to re-render
+        return r
 
     @app.get("/api/meta")
     async def meta() -> dict:

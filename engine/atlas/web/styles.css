@@ -765,3 +765,65 @@ td.num,th.num{ text-align:right; font-variant-numeric:tabular-nums; }
 .ep-summary .lbl{ font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); font-weight:700; margin-bottom:6px; }
 .ep-plain{ font-size:13px; color:var(--muted); line-height:1.6; white-space:pre-wrap; }
 @media (max-width:1000px){ .ep-grid{ grid-template-columns:1fr; } }
+
+/* ============================================================ ATLAS COPILOT */
+.logo{ cursor:pointer; transition:filter .25s var(--ease); }
+.logo:hover{ filter:drop-shadow(0 0 10px var(--neon)); }
+.logo:active{ transform:scale(.9); }
+
+.cp-overlay{ position:fixed; inset:0; z-index:90; display:none; }
+.cp-overlay.show{ display:block; }
+.cp-backdrop{ position:absolute; inset:0; background:rgba(2,4,6,0); backdrop-filter:blur(0);
+  transition:background .55s var(--ease-out), backdrop-filter .55s var(--ease-out); }
+.cp-overlay.show .cp-backdrop{ background:rgba(2,4,6,.74); backdrop-filter:blur(11px); }
+
+/* The orb: flies from the logo to center, spins, and cycles full RGB before it detonates. */
+.cp-orb{ position:fixed; width:38px; height:38px; border-radius:50%; z-index:92; pointer-events:none;
+  margin:-19px 0 0 -19px; will-change:transform,opacity,filter;
+  background:conic-gradient(from 0deg, #ff004c,#ff8a00,#ffe600,#2bff9a,#00b3ff,#7a00ff,#ff004c);
+  box-shadow:0 0 44px 10px rgba(255,255,255,.35), inset 0 0 20px rgba(255,255,255,.5); }
+.cp-orb.fly{ animation:orb-fly 1s cubic-bezier(.5,0,.2,1) forwards, orb-rgb 1s linear forwards; }
+@keyframes orb-fly{
+  0%{ transform:translate(0,0) scale(1) rotate(0); }
+  55%{ transform:translate(var(--dx),var(--dy)) scale(3.1) rotate(620deg); }
+  100%{ transform:translate(var(--dx),var(--dy)) scale(3.5) rotate(780deg); } }
+@keyframes orb-rgb{
+  0%{ filter:hue-rotate(0deg) saturate(1.4); box-shadow:0 0 44px 10px rgba(255,0,76,.6); }
+  50%{ filter:hue-rotate(220deg) saturate(2.2); box-shadow:0 0 70px 22px rgba(43,255,154,.65); }
+  85%{ filter:hue-rotate(380deg) saturate(2) blur(2px); box-shadow:0 0 90px 30px rgba(122,0,255,.6); }
+  100%{ filter:hue-rotate(420deg) saturate(1.6) blur(7px); } }
+.cp-orb.boom{ animation:orb-boom .55s cubic-bezier(.16,1,.3,1) forwards; }
+@keyframes orb-boom{ from{ opacity:1; } to{ transform:translate(var(--dx),var(--dy)) scale(11); opacity:0; filter:blur(36px) hue-rotate(500deg); } }
+
+.cp-panel{ position:fixed; left:50%; top:50%; z-index:93; width:min(780px,92vw); max-height:82vh;
+  display:flex; flex-direction:column; border-radius:24px; overflow:hidden;
+  background:var(--glass-2); border:1px solid var(--hair-2); backdrop-filter:var(--blur); -webkit-backdrop-filter:var(--blur);
+  transform:translate(-50%,-50%) scale(.15) rotate(-8deg); opacity:0;
+  box-shadow:0 40px 120px rgba(0,0,0,.6), 0 0 70px var(--neon-glow), inset 0 1px 0 rgba(255,255,255,.08);
+  transition:transform .5s cubic-bezier(.16,1,.3,1), opacity .4s; animation:cp-glow 6s linear infinite; }
+.cp-panel.show{ transform:translate(-50%,-50%) scale(1) rotate(0); opacity:1; }
+@keyframes cp-glow{ 0%{ box-shadow:0 40px 120px rgba(0,0,0,.6), 0 0 70px rgba(43,255,154,.5); }
+  33%{ box-shadow:0 40px 120px rgba(0,0,0,.6), 0 0 70px rgba(0,179,255,.5); }
+  66%{ box-shadow:0 40px 120px rgba(0,0,0,.6), 0 0 70px rgba(157,123,255,.5); }
+  100%{ box-shadow:0 40px 120px rgba(0,0,0,.6), 0 0 70px rgba(43,255,154,.5); } }
+.cp-h{ display:flex; align-items:center; gap:10px; padding:16px 20px; border-bottom:1px solid var(--hair); }
+.cp-h .cp-dot{ width:12px; height:12px; border-radius:50%; background:conic-gradient(from 0deg,#ff004c,#ffe600,#2bff9a,#00b3ff,#7a00ff,#ff004c); animation:spin 4s linear infinite; box-shadow:0 0 12px var(--neon); }
+.cp-h h2{ margin:0; font-size:16px; font-weight:740; letter-spacing:.2px; }
+.cp-h .cp-ctx{ font-size:12px; color:var(--dim); } .cp-h .x{ margin-left:auto; }
+.cp-log{ flex:1; min-height:120px; overflow-y:auto; padding:16px 20px; display:flex; flex-direction:column; gap:12px; }
+.cp-msg{ max-width:88%; padding:11px 14px; border-radius:15px; line-height:1.5; animation:popin .35s var(--ease-out) both; }
+.cp-msg.user{ align-self:flex-end; background:linear-gradient(180deg,#1fe98a,#12b16a); color:#04231a; border-bottom-right-radius:5px; font-weight:600; }
+.cp-msg.ai{ align-self:flex-start; background:rgba(255,255,255,.06); border:1px solid var(--hair); border-bottom-left-radius:5px; }
+.cp-msg.ai.working{ color:var(--neon-2); }
+.cp-applied{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.cp-applied .ac{ font-size:11px; font-weight:600; padding:3px 9px; border-radius:7px; background:var(--neon-soft); color:var(--neon-2); border:1px solid var(--neon-line); }
+.cp-applied .ac.err{ background:var(--loss-soft); color:var(--loss); border-color:transparent; }
+.cp-suggest{ display:flex; flex-wrap:wrap; gap:8px; padding:0 20px 8px; }
+.cp-suggest button{ font-size:12px; padding:6px 12px; border-radius:999px; background:rgba(255,255,255,.05); border:1px solid var(--hair-2); color:var(--muted); }
+.cp-suggest button:hover{ color:var(--text); border-color:var(--neon-line); }
+.cp-in{ display:flex; gap:10px; padding:14px 20px; border-top:1px solid var(--hair); }
+.cp-in textarea{ flex:1; min-height:44px; max-height:140px; resize:none; line-height:1.5; border-radius:14px; }
+.cp-in .cp-send{ width:46px; flex:0 0 46px; border-radius:14px; display:flex; align-items:center; justify-content:center;
+  background:linear-gradient(180deg,#5cffb0,#1fe98a); color:#04231a; box-shadow:0 5px 16px var(--neon-glow); }
+.cp-in .cp-send svg{ width:19px; height:19px; }
+@media (prefers-reduced-motion: reduce){ .cp-orb.fly,.cp-orb.boom,.cp-panel,.cp-panel.show{ animation:none; transition:none; } }

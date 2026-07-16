@@ -2441,6 +2441,75 @@ function applyTabIcons() {
   });
 }
 
+// ============================================================ ATLAS COPILOT
+let cpEl = null;
+const SEND_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>';
+function ensureCopilot() {
+  if (cpEl) return cpEl;
+  const o = document.createElement("div"); o.className = "cp-overlay"; o.id = "cp-overlay";
+  o.innerHTML = `<div class="cp-backdrop"></div>
+    <div class="cp-orb" id="cp-orb"></div>
+    <div class="cp-panel" id="cp-panel">
+      <div class="cp-h"><span class="cp-dot"></span><h2>Atlas Copilot</h2><span class="cp-ctx" id="cp-ctx"></span><button class="btn-ghost btn-sm x" id="cp-close">Close</button></div>
+      <div class="cp-log" id="cp-log"><div class="cp-msg ai">I can read and act on any part of Atlas. Tell me what to do — consolidate résumés, fill your profile from a résumé, capture what you changed on a tab, add todos, tweak settings…</div></div>
+      <div class="cp-suggest" id="cp-suggest"></div>
+      <div class="cp-in"><textarea id="cp-input" placeholder="Ask Atlas to do something…  (Enter to send)"></textarea><button class="cp-send" id="cp-send" title="Send">${SEND_SVG}</button></div>
+    </div>`;
+  document.body.appendChild(o);
+  o.querySelector(".cp-backdrop").onclick = closeCopilot;
+  o.querySelector("#cp-close").onclick = closeCopilot;
+  const input = o.querySelector("#cp-input");
+  const go2 = () => { const m = input.value.trim(); if (m) { input.value = ""; cpSend(m); } };
+  o.querySelector("#cp-send").onclick = go2;
+  input.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go2(); } };
+  cpEl = o; return o;
+}
+function openCopilot() {
+  const o = ensureCopilot();
+  const orb = o.querySelector("#cp-orb"), panel = o.querySelector("#cp-panel");
+  orb.className = "cp-orb"; orb.style.display = ""; panel.classList.remove("show");
+  o.classList.add("show");
+  const r = document.querySelector(".logo").getBoundingClientRect();
+  const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+  orb.style.left = cx + "px"; orb.style.top = cy + "px";
+  orb.style.setProperty("--dx", (window.innerWidth / 2 - cx) + "px");
+  orb.style.setProperty("--dy", (window.innerHeight / 2 - cy) + "px");
+  o.querySelector("#cp-ctx").textContent = "· acting on " + (document.querySelector(`.tab[data-view="${active}"]`)?.dataset.label || active);
+  cpRenderSuggest();
+  setTimeout(() => orb.classList.add("fly"), 20);   // not rAF: fires even when tab is backgrounded
+  setTimeout(() => { orb.classList.add("boom"); panel.classList.add("show"); o.querySelector("#cp-input").focus(); }, 950);
+  setTimeout(() => { orb.style.display = "none"; }, 1550);
+  document.addEventListener("keydown", cpEsc);
+}
+function closeCopilot() { if (cpEl) cpEl.classList.remove("show"); document.removeEventListener("keydown", cpEsc); }
+function cpEsc(e) { if (e.key === "Escape") closeCopilot(); }
+function cpRenderSuggest() {
+  const label = document.querySelector(`.tab[data-view="${active}"]`)?.dataset.label || active;
+  const s = cpEl.querySelector("#cp-suggest");
+  const sugs = [`Update Atlas with what I changed on ${label}`, "Fill my profile from my latest résumé", "Consolidate my résumés into one"];
+  s.innerHTML = sugs.map((t) => `<button data-sug="${esc(t)}">${esc(t)}</button>`).join("");
+  s.querySelectorAll("[data-sug]").forEach((b) => (b.onclick = () => cpSend(b.dataset.sug)));
+}
+async function cpSend(message) {
+  const log = cpEl.querySelector("#cp-log");
+  log.insertAdjacentHTML("beforeend", `<div class="cp-msg user">${esc(message)}</div><div class="cp-msg ai working" id="cp-pending"><span class="spinner"></span> Working…</div>`);
+  log.scrollTop = log.scrollHeight;
+  try {
+    const r = await api("/copilot", { method: "POST", body: { message, view: active } });
+    cpEl.querySelector("#cp-pending")?.remove();
+    const chips = [...(r.applied || []).map((a) => `<span class="ac">${esc(a)}</span>`),
+                   ...(r.errors || []).map((e) => `<span class="ac err">${esc(e)}</span>`)].join("");
+    log.insertAdjacentHTML("beforeend", `<div class="cp-msg ai">${esc(r.reply || "Done.")}${chips ? `<div class="cp-applied">${chips}</div>` : ""}</div>`);
+    log.scrollTop = log.scrollHeight;
+    if (r.applied && r.applied.length) render(active);
+    if (r.navigate && r.navigate !== active) go(r.navigate);
+  } catch (e) {
+    cpEl.querySelector("#cp-pending")?.remove();
+    log.insertAdjacentHTML("beforeend", `<div class="cp-msg ai">⚠️ ${esc(e.message)}</div>`);
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
 // ---------- boot ----------
 // Wrap every view so in-flight op spinners (data-op buttons) are restored after each
 // render — this is what keeps loading state alive when you leave a tab and come back.
@@ -2450,6 +2519,7 @@ Object.keys(VIEWS).forEach((k) => {
   VIEWS[k] = async (...a) => { const r = await orig(...a); restoreOps(); applyLayout(k); return r; };
 });
 connectWS();
+document.querySelector(".logo").onclick = openCopilot;   // the orb → Atlas Copilot
 layoutBoot().finally(() => {
   go("home");
   // Reingest Google Calendar on every dashboard load — pulls ALL visible calendars,
