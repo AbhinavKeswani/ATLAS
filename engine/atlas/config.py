@@ -14,6 +14,11 @@ from pathlib import Path
 
 
 def _app_support() -> Path:
+    # ATLAS_APP_DIR points the whole data dir (DB, logs, uploads, tokens) somewhere
+    # else — used for demo/dev instances that must not touch the real database.
+    override = os.environ.get("ATLAS_APP_DIR", "").strip()
+    if override:
+        return Path(override)
     if sys.platform == "win32":
         return Path(os.environ.get("APPDATA", Path.home())) / "Atlas"
     if sys.platform == "darwin":
