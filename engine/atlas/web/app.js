@@ -90,6 +90,10 @@ async function render(view) {
   await VIEWS[view]();
   if (seq !== renderSeq) return;      // a newer render superseded this one
   if (snap && root) uiRestore(root, snap);
+  // Entrance choreography: stagger cards on a view's first paint (60ms/card, capped);
+  // background re-renders paint in place with no delay.
+  if (root) root.querySelectorAll(".card").forEach((c, i) => c.style.setProperty("--i", snap ? 0 : Math.min(i, 9)));
+  if (!snap && EDIT.on) desyncJiggle();
   restoreOps();
 }
 
@@ -158,6 +162,7 @@ function connectWS() {
     const m = JSON.parse(ev.data);
     if (m.type === "claude_busy") { claudeBusy = true; refresh(); }
     else if (m.type === "claude_idle") { claudeBusy = false; refresh(); }
+    else if (m.type === "config_changed") { if ((m.data || {}).source !== "api") configReload(); }
     else if (Date.now() < suppressRefreshUntil) { /* self-originated in-place update — skip re-render */ }
     else refresh();
   };
@@ -2323,18 +2328,23 @@ const LAYOUT = { live: { order: {}, span: {} }, presets: {}, activeName: "Defaul
 let layoutSaveT;
 function layoutSave() {
   clearTimeout(layoutSaveT);
-  layoutSaveT = setTimeout(() => api("/settings", { method: "PUT", body: { key: "layout_state",
-    value: { presets: LAYOUT.presets, active: LAYOUT.activeName, live: LAYOUT.live, icons: LAYOUT.icons } } }).catch(() => {}), 600);
+  // Layout + icons persist into user_config.json (the hand-editable file), not SQLite.
+  layoutSaveT = setTimeout(() => api("/config", { method: "PUT", body: {
+    layout: { presets: LAYOUT.presets, active: LAYOUT.activeName, live: LAYOUT.live },
+    icons: LAYOUT.icons } }).catch(() => {}), 600);
 }
 async function layoutBoot() {
-  const s = await api("/settings/layout_state").catch(() => null);
-  const v = (s && s.value) || {};
+  const cfg = await api("/config").catch(() => null);
+  if (cfg) CONFIG = cfg;
+  const v = (cfg && cfg.layout) || {};
   LAYOUT.presets = v.presets || {};
   LAYOUT.activeName = v.active || "Default";
   LAYOUT.live = v.live || { order: {}, span: {} };
-  LAYOUT.icons = v.icons || {};
+  LAYOUT.icons = (cfg && cfg.icons) || {};
   if (!LAYOUT.presets["Default"]) { LAYOUT.presets["Default"] = { order: {}, span: {} }; layoutSave(); }
+  applyTheme(CONFIG.theme);
   applyTabIcons();
+  buildThemeStrip();
 }
 const slugW = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 28) || "card";
 function tagWidgets(view, root) {
@@ -2385,22 +2395,25 @@ function wireWidget(card, parent, orderKey) {
     };
     h.appendChild(b);
   }
+  // Corner resize handle (visible in edit mode): click toggles the card's width span
+  // with a FLIP so the grid reflow animates instead of snapping.
+  if (parent.classList.contains("grid") && !card.querySelector(".rz-corner")) {
+    const rz = document.createElement("button");
+    rz.className = "rz-corner"; rz.title = "Resize width";
+    rz.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M8 12h8M4 12l3-3m-3 3l3 3M20 12l-3-3m3 3l-3 3"/></svg>';
+    rz.onclick = (e) => {
+      e.stopPropagation();
+      flipSiblings(parent, null, () => {
+        const now = card.classList.toggle("span-2");
+        LAYOUT.live.span[card.dataset.w] = now ? 2 : 1;
+      });
+      layoutSave();
+    };
+    card.appendChild(rz);
+  }
   if (!orderKey) return;
-  h.addEventListener("mousedown", (e) => { if (!e.target.closest("button,input,select")) card.draggable = true; });
-  card.addEventListener("dragstart", (e) => { card.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; });
-  card.addEventListener("dragover", (e) => {
-    e.preventDefault();
-    const dragging = parent.querySelector(".card.dragging");
-    if (!dragging || dragging === card) return;
-    const r = card.getBoundingClientRect();
-    parent.insertBefore(dragging, (e.clientY - r.top) < r.height / 2 ? card : card.nextSibling);
-  });
-  card.addEventListener("drop", (e) => e.preventDefault());
-  card.addEventListener("dragend", () => {
-    card.draggable = false; card.classList.remove("dragging");
-    LAYOUT.live.order[orderKey] = [...parent.children].filter((x) => x.dataset && x.dataset.w).map((x) => x.dataset.w);
-    layoutSave();
-  });
+  // Reordering is edit-mode-only: pointer-capture drag with lift + FLIP slot swaps.
+  card.addEventListener("pointerdown", (e) => startWidgetDrag(e, card, parent, orderKey));
 }
 function layoutSavePreset(name) { LAYOUT.presets[name] = JSON.parse(JSON.stringify(LAYOUT.live)); LAYOUT.activeName = name; layoutSave(); }
 function layoutApplyPreset(name) {
@@ -2510,6 +2523,275 @@ async function cpSend(message) {
   }
 }
 
+// ============================================================ USER CONFIG + THEMES
+// Server-side source of truth is ~/Library/Application Support/Atlas/user_config.json
+// (hand-editable; the server hot-pushes `config_changed` when it's edited on disk).
+let CONFIG = { theme: { preset: "emerald", custom: null }, intro: "always", icons: {}, layout: {} };
+
+const THEMES = {
+  emerald: { label: "Emerald", neon: "#2bff9a", neon2: "#7dffc0", flow: "#43e0ff", violet: "#8affd0", aur3: "#14c48a", bg: "#04070a" },
+  ocean:   { label: "Ocean",   neon: "#38bdf8", neon2: "#7dd3fc", flow: "#818cf8", violet: "#22d3ee", aur3: "#2563eb", bg: "#030812" },
+  sunset:  { label: "Sunset",  neon: "#fb923c", neon2: "#fdba74", flow: "#f472b6", violet: "#fbbf24", aur3: "#e11d48", bg: "#0c0504" },
+  violet:  { label: "Violet",  neon: "#a78bfa", neon2: "#c4b5fd", flow: "#f472b6", violet: "#818cf8", aur3: "#7c3aed", bg: "#070414" },
+  ember:   { label: "Ember",   neon: "#f87171", neon2: "#fca5a5", flow: "#fbbf24", violet: "#fb7185", aur3: "#b91c1c", bg: "#0d0405" },
+  mono:    { label: "Mono",    neon: "#e2e8f0", neon2: "#f8fafc", flow: "#94a3b8", violet: "#cbd5e1", aur3: "#475569", bg: "#050607" },
+};
+
+function _deriveCustom(c) {
+  const c1 = c.c1 || "#2bff9a", c2 = c.c2 || "#43e0ff", c3 = c.c3 || c2;
+  return { neon: c1, neon2: `color-mix(in srgb, ${c1} 55%, white)`, flow: c2, violet: c3,
+           aur3: `color-mix(in srgb, ${c1} 55%, black)`, bg: "#04070a" };
+}
+
+// Retint the whole app from one palette: accents, glows, aurora blobs, gradients.
+// Semantic colors (--gain/--loss/--up/--down/--amber) stay untouched by design.
+function applyTheme(theme) {
+  const t = theme && theme.custom ? _deriveCustom(theme.custom) : (THEMES[(theme || {}).preset] || THEMES.emerald);
+  const r = document.documentElement.style;
+  const mix = (c, pct) => `color-mix(in srgb, ${c} ${pct}%, transparent)`;
+  r.setProperty("--neon", t.neon); r.setProperty("--neon-2", t.neon2);
+  r.setProperty("--blood", t.neon); r.setProperty("--blood-2", t.neon2);
+  r.setProperty("--neon-glow", mix(t.neon, 55)); r.setProperty("--neon-soft", mix(t.neon, 15));
+  r.setProperty("--blood-soft", mix(t.neon, 15)); r.setProperty("--blood-line", mix(t.neon, 45));
+  r.setProperty("--flow", t.flow); r.setProperty("--flow-soft", mix(t.flow, 15));
+  r.setProperty("--violet", t.violet); r.setProperty("--violet-soft", mix(t.violet, 14));
+  r.setProperty("--aur1", t.neon); r.setProperty("--aur2", t.flow); r.setProperty("--aur3", t.aur3);
+  r.setProperty("--bg", t.bg);
+  document.body.style.background = t.bg;
+}
+
+let configSaveT;
+function configSave(partial) {
+  clearTimeout(configSaveT);
+  configSaveT = setTimeout(() => api("/config", { method: "PUT", body: partial }).catch(() => {}), 400);
+}
+
+async function configReload() {
+  const cfg = await api("/config").catch(() => null);
+  if (!cfg) return;
+  CONFIG = cfg;
+  LAYOUT.live = (cfg.layout && cfg.layout.live) || { order: {}, span: {} };
+  LAYOUT.presets = (cfg.layout && cfg.layout.presets) || {};
+  LAYOUT.activeName = (cfg.layout && cfg.layout.active) || "Default";
+  LAYOUT.icons = cfg.icons || {};
+  applyTheme(cfg.theme);
+  applyTabIcons();
+  buildThemeStrip();
+  if (!document.body.classList.contains("editing")) render(active);
+}
+
+function buildThemeStrip() {
+  const strip = el("theme-strip");
+  if (!strip) return;
+  const cur = CONFIG.theme || {};
+  const chips = Object.entries(THEMES).map(([k, t]) =>
+    `<button class="tchip ${!cur.custom && cur.preset === k ? "on" : ""}" data-theme="${k}" title="${t.label}"
+       style="background:linear-gradient(135deg, ${t.neon}, ${t.flow})"></button>`).join("");
+  strip.innerHTML = `<span class="ts-label">Theme</span>${chips}
+    <button class="tchip tchip-custom ${cur.custom ? "on" : ""}" title="Custom colors">✦</button>
+    <span class="ts-label" style="margin-left:8px">Intro</span>
+    <select id="ts-intro" class="btn-ghost btn-sm" style="padding:4px 8px">
+      ${["always", "session", "off"].map((v) => `<option value="${v}" ${(CONFIG.intro || "always") === v ? "selected" : ""}>${v}</option>`).join("")}
+    </select>`;
+  strip.querySelectorAll("[data-theme]").forEach((b) => (b.onclick = () => {
+    CONFIG.theme = { preset: b.dataset.theme, custom: null };
+    applyTheme(CONFIG.theme); buildThemeStrip();
+    configSave({ theme: CONFIG.theme });
+  }));
+  strip.querySelector(".tchip-custom").onclick = () => {
+    const c = CONFIG.theme.custom || { c1: "#2bff9a", c2: "#43e0ff", c3: "#8affd0" };
+    strip.querySelector(".tchip-custom").insertAdjacentHTML("afterend",
+      `<span class="ts-custom">${["c1", "c2", "c3"].map((k) => `<input type="color" data-ck="${k}" value="${c[k]}" style="width:26px;height:26px;border:none;background:none;cursor:pointer">`).join("")}</span>`);
+    strip.querySelectorAll("[data-ck]").forEach((inp) => (inp.oninput = () => {
+      c[inp.dataset.ck] = inp.value;
+      CONFIG.theme = { preset: null, custom: { ...c } };
+      applyTheme(CONFIG.theme);
+      configSave({ theme: CONFIG.theme });
+    }));
+  };
+  const is = strip.querySelector("#ts-intro");
+  if (is) is.onchange = () => { CONFIG.intro = is.value; configSave({ intro: is.value }); };
+}
+
+// ============================================================ EDIT MODE
+// Pencil fab toggles "customize": widgets jiggle (desynced), drag to reorder with a
+// lift + FLIP slot-swaps, corner handle resizes span, theme strip slides in.
+const EDIT = { on: false };
+
+function editToggle(force) {
+  EDIT.on = force != null ? force : !EDIT.on;
+  document.body.classList.toggle("editing", EDIT.on);
+  if (EDIT.on) {
+    desyncJiggle();
+    toast("Edit mode — drag to rearrange, click ⤢ corner to resize, pick a theme below");
+  } else {
+    layoutSave();                     // flush any pending order/span changes
+  }
+}
+
+// Randomize each card's jiggle phase/tempo so the shake never syncs (the iOS trick:
+// negative delays start every card mid-cycle at a different point).
+function desyncJiggle() {
+  document.querySelectorAll(".card[data-w]").forEach((c) => {
+    c.style.animationDelay = `${-(Math.random() * 0.7 + 0.05).toFixed(2)}s`;
+    c.style.animationDuration = `${(0.22 + Math.random() * 0.11).toFixed(2)}s`;
+  });
+}
+
+// FLIP: measure, mutate, animate only transforms (WAAPI applies invert+play atomically).
+function flipSiblings(container, except, mutate) {
+  const els = [...container.children].filter((x) => x !== except && x.dataset && x.dataset.w);
+  const first = new Map(els.map((e) => [e, e.getBoundingClientRect()]));
+  mutate();
+  for (const e of els) {
+    const f = first.get(e), l = e.getBoundingClientRect();
+    const dx = f.left - l.left, dy = f.top - l.top;
+    if (!dx && !dy) continue;
+    e.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }],
+              { duration: 300, easing: "cubic-bezier(0.22, 1, 0.36, 1)" });
+  }
+}
+
+function startWidgetDrag(e, card, parent, orderKey) {
+  if (!EDIT.on || e.button !== 0 || e.target.closest("button,input,select,a")) return;
+  e.preventDefault();
+  try { card.setPointerCapture(e.pointerId); } catch {}   // synthetic/stale pointers
+  card.classList.add("lifting");
+  card.style.pointerEvents = "none";              // so elementFromPoint sees what's under us
+  const grabX = e.clientX, grabY = e.clientY;
+  // accX/accY absorb the card's home-slot movement when it re-slots mid-drag, so the
+  // card stays glued to the pointer: transform = pointerDelta + (originalHome - currentHome).
+  let accX = 0, accY = 0;
+  let homeRect = card.getBoundingClientRect();    // untransformed home at pickup
+
+  const move = (ev) => {
+    card.style.transform = `translate3d(${ev.clientX - grabX + accX}px, ${ev.clientY - grabY + accY}px, 0) scale(1.07)`;
+    const over = document.elementFromPoint(ev.clientX, ev.clientY);
+    const target = over && over.closest ? over.closest(".card[data-w]") : null;
+    if (!target || target === card || target.parentElement !== parent) return;
+    const tr = target.getBoundingClientRect();
+    const after = (ev.clientY - tr.top) > tr.height / 2 || ((ev.clientX - tr.left) > tr.width / 2 && Math.abs(ev.clientY - tr.top - tr.height / 2) < tr.height / 2);
+    // Reposition in DOM; siblings FLIP into their new slots; keep the card glued to the pointer.
+    flipSiblings(parent, card, () => parent.insertBefore(card, after ? target.nextSibling : target));
+    const keep = card.style.transform;
+    card.style.transform = "none";
+    const home = card.getBoundingClientRect();    // new untransformed slot (same frame, no paint)
+    card.style.transform = keep;
+    accX += homeRect.left - home.left;
+    accY += homeRect.top - home.top;
+    homeRect = home;
+    card.style.transform = `translate3d(${ev.clientX - grabX + accX}px, ${ev.clientY - grabY + accY}px, 0) scale(1.07)`;
+  };
+  const up = () => {
+    card.removeEventListener("pointermove", move);
+    card.removeEventListener("pointerup", up);
+    card.removeEventListener("pointercancel", up);
+    card.classList.remove("lifting");
+    card.classList.add("drop-settle");
+    card.style.transform = "";                     // spring back into the slot
+    card.addEventListener("transitionend", function done() {
+      card.classList.remove("drop-settle");
+      card.style.pointerEvents = "";
+      card.removeEventListener("transitionend", done);
+    });
+    setTimeout(() => { card.classList.remove("drop-settle"); card.style.pointerEvents = ""; }, 700); // safety
+    LAYOUT.live.order[orderKey] = [...parent.children].filter((x) => x.dataset && x.dataset.w).map((x) => x.dataset.w);
+    layoutSave();
+  };
+  card.addEventListener("pointermove", move);
+  card.addEventListener("pointerup", up);
+  card.addEventListener("pointercancel", up);
+}
+
+// ============================================================ INTRO
+// Logo spin + theme-colored sparks + "welcome to ATLAS" gradient wipe. Plays per the
+// config knob: "always" (every tab activation), "session" (once per browser session),
+// "off". Click anywhere skips. Reduced-motion users go straight to the dashboard.
+const INTRO = { playing: false, raf: null, pool: [], emit: false };
+
+function playIntro() {
+  const mode = CONFIG.intro || "always";
+  if (INTRO.playing || mode === "off" || document.hidden) return;
+  if (mode === "session" && sessionStorage.getItem("atlas.introSeen")) return;
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  sessionStorage.setItem("atlas.introSeen", "1");
+  INTRO.playing = true;
+  document.body.classList.add("bg-paused");
+
+  const elx = document.createElement("div");
+  elx.className = "intro";
+  elx.innerHTML = `<canvas></canvas>
+    <svg class="intro-logo" viewBox="0 0 40 40" fill="none">
+      <circle cx="20" cy="20" r="18" stroke="url(#ilg)" stroke-width="2.2"/>
+      <path d="M20 6 C12 14, 28 26, 20 34" stroke="var(--neon)" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+      <defs><linearGradient id="ilg" x1="0" y1="0" x2="40" y2="40"><stop stop-color="var(--neon)"/><stop offset="1" stop-color="var(--violet)"/></linearGradient></defs>
+    </svg>
+    <div class="intro-word"><small>welcome to</small>ATLAS</div>
+    <div class="intro-skip">click anywhere to skip</div>`;
+  document.body.appendChild(elx);
+
+  // --- sparks: pooled particles, additive dots, self-stopping rAF (research spec) ---
+  const cv = elx.querySelector("canvas"), cx = cv.getContext("2d");
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr; cx.scale(dpr, dpr);
+  const cs = getComputedStyle(document.documentElement);
+  const colors = ["--neon", "--neon-2", "--flow", "--violet"].map((v) => cs.getPropertyValue(v).trim()).filter(Boolean);
+  const pool = INTRO.pool; pool.length = 0;
+  const t0 = performance.now();
+  INTRO.emit = true;
+
+  function burst(x, y, n, angle) {
+    for (let i = 0; i < n; i++) {
+      const a = angle + (Math.random() - 0.5) * 0.9;
+      const s = 2.2 + Math.random() * 5;
+      pool.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 1,
+        decay: 0.012 + Math.random() * 0.02, c: colors[(Math.random() * colors.length) | 0], r: 1 + Math.random() * 2.2 });
+    }
+  }
+  function tick(now) {
+    cx.clearRect(0, 0, innerWidth, innerHeight);
+    // Emit tangentially off the spinning logo rim for the first ~1.4s.
+    const t = (now - t0) / 1000;
+    if (INTRO.emit && t < 1.4 && pool.length < 220) {
+      const cxp = innerWidth / 2, cyp = innerHeight / 2 - 40;
+      const ang = -Math.PI / 2 + t * 9;             // matches the -540° spin feel
+      burst(cxp + Math.cos(ang) * 62, cyp + Math.sin(ang) * 62, 3, ang + Math.PI / 2);
+    }
+    cx.globalCompositeOperation = "lighter";
+    for (let i = pool.length - 1; i >= 0; i--) {
+      const p = pool[i];
+      p.vy += 0.06; p.vx *= 0.986; p.vy *= 0.986;
+      p.x += p.vx; p.y += p.vy; p.life -= p.decay;
+      if (p.life <= 0) { pool.splice(i, 1); continue; }
+      cx.globalAlpha = p.life;
+      cx.beginPath(); cx.arc(p.x, p.y, p.r * p.life, 0, 6.283); cx.fillStyle = p.c; cx.fill();
+    }
+    cx.globalAlpha = 1; cx.globalCompositeOperation = "source-over";
+    INTRO.raf = (pool.length || (INTRO.emit && t < 1.4)) ? requestAnimationFrame(tick) : null;
+  }
+  INTRO.raf = requestAnimationFrame(tick);
+
+  const t1 = setTimeout(() => elx.classList.add("wordin"), 800);
+  const t2 = setTimeout(end, 2450);
+  elx.onclick = end;
+
+  function end() {
+    if (!INTRO.playing) return;
+    INTRO.playing = false; INTRO.emit = false;
+    clearTimeout(t1); clearTimeout(t2);
+    elx.classList.add("out");
+    setTimeout(() => {
+      if (INTRO.raf) { cancelAnimationFrame(INTRO.raf); INTRO.raf = null; }
+      pool.length = 0;
+      elx.remove();                                  // drop the full-screen layer entirely
+      document.body.classList.remove("bg-paused");
+      // Choreograph the dashboard entrance behind the departing wipe.
+      const root = document.getElementById("view-" + active);
+      if (root) root.querySelectorAll(".card").forEach((c, i) => c.style.setProperty("--i", Math.min(i, 9)));
+    }, 540);
+  }
+}
+
 // ---------- boot ----------
 // Wrap every view so in-flight op spinners (data-op buttons) are restored after each
 // render — this is what keeps loading state alive when you leave a tab and come back.
@@ -2536,8 +2818,17 @@ function applyDeepLink() {
 }
 window.addEventListener("hashchange", applyDeepLink);
 
+// Edit-mode fab + intro triggers.
+el("edit-fab").onclick = () => editToggle();
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && EDIT.on) editToggle(false); });
+document.addEventListener("visibilitychange", () => {
+  document.body.classList.toggle("bg-paused", document.hidden || INTRO.playing);
+  if (!document.hidden) playIntro();          // "always" replays per tab activation; other modes gate themselves
+});
+
 layoutBoot().finally(() => {
   go("home");
+  playIntro();
   applyDeepLink();
   // Reingest Google Calendar on every dashboard load — pulls ALL visible calendars,
   // then repaints whatever view is active. Silently skipped when Google isn't connected.

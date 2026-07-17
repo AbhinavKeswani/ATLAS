@@ -32,6 +32,10 @@ LOG_DIR = APP_SUPPORT / "logs"
 UPLOAD_DIR = APP_SUPPORT / "uploads"
 RESUME_DIR = APP_SUPPORT / "resumes"    # compiled .tex/.pdf per saved resume doc
 
+# Hand-editable user config: theme, rail icons, widget layout, intro behavior.
+# The server watches its mtime and hot-pushes changes to the UI over the WS bus.
+USER_CONFIG = Path(os.environ.get("ATLAS_USER_CONFIG", str(APP_SUPPORT / "user_config.json")))
+
 # Google OAuth: user drops a Desktop-app OAuth client here; token is cached alongside.
 GOOGLE_CREDENTIALS = Path(os.environ.get("ATLAS_GOOGLE_CREDENTIALS", str(APP_SUPPORT / "google_credentials.json")))
 GOOGLE_TOKEN = APP_SUPPORT / "google_token.json"

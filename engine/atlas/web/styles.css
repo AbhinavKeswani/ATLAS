@@ -11,7 +11,17 @@
   --gain:#2bff9a; --gain-soft:rgba(43,255,154,.14); --loss:#ff6a6a; --loss-soft:rgba(255,106,106,.14);
   --violet:#8affd0; --violet-soft:rgba(138,255,208,.14);
   --r:22px; --r-sm:14px; --ease:cubic-bezier(.22,.61,.36,1); --ease-out:cubic-bezier(.16,1,.3,1);
-  --blur:saturate(160%) blur(30px);
+  /* Blur budget: 14px reads ~identically over a dark aurora at ~1/4 the GPU cost of 30px. */
+  --blur:saturate(160%) blur(14px);
+  /* Spring easing: easeOutBack fallback; real sampled spring where linear() exists. */
+  --spring:cubic-bezier(0.34, 1.56, 0.64, 1); --spring-dur:350ms;
+}
+@supports (animation-timing-function: linear(0, 1)) {
+  :root{
+    --spring:linear(0, 0.0095, 0.037 2.1%, 0.147 4.4%, 0.615 10.7%, 0.845 14%, 0.955 16.2%,
+      1.033 18.4%, 1.082 20.7%, 1.107 23.3%, 1.109 27.3%, 1.026 39.7%, 0.999 45%, 0.99 53.2%, 1);
+    --spring-dur:550ms;
+  }
 }
 *{ box-sizing:border-box; }
 html,body{ height:100%; margin:0; }
@@ -20,31 +30,42 @@ body{ background:var(--bg); color:var(--text); overflow:hidden;
   -webkit-font-smoothing:antialiased; letter-spacing:.1px; display:flex; height:100vh; }
 ::selection{ background:var(--blood-soft); }
 
-/* ---------- animated aurora backdrop (neon green/teal) ---------- */
-.aurora{ position:fixed; inset:-20%; z-index:0; pointer-events:none; filter:blur(70px) saturate(150%); opacity:.42; }
-.aurora .blob{ position:absolute; width:58vw; height:58vw; border-radius:50%; mix-blend-mode:screen; will-change:transform; }
-.aurora .b1{ background:radial-gradient(circle at 30% 30%, var(--neon), transparent 64%); top:-12%; left:-6%; animation:drift1 28s var(--ease) infinite alternate; }
-.aurora .b2{ background:radial-gradient(circle at 30% 30%, var(--flow), transparent 64%); top:18%; right:-12%; animation:drift2 34s var(--ease) infinite alternate; }
-.aurora .b3{ background:radial-gradient(circle at 30% 30%, #14c48a, transparent 66%); bottom:-22%; left:22%; animation:drift3 40s var(--ease) infinite alternate; }
+/* ---------- animated aurora backdrop (theme-tinted) ----------
+   PERF: blur lives on each blob (static filter → rendered once into the blob's own
+   GPU layer), NOT on the container — a container filter re-blurs the whole screen
+   every frame the children move. Blobs then animate by transform only (compositor).
+   Loops are slow on purpose: identical look, far more compositor idle time. */
+.aurora{ position:fixed; inset:-20%; z-index:0; pointer-events:none; opacity:.42; }
+.aurora .blob{ position:absolute; width:58vw; height:58vw; border-radius:50%; mix-blend-mode:screen;
+  filter:blur(70px) saturate(150%); will-change:transform; transform:translateZ(0); }
+.aurora .b1{ background:radial-gradient(circle at 30% 30%, var(--aur1, var(--neon)), transparent 64%); top:-12%; left:-6%; animation:drift1 46s var(--ease) infinite alternate; }
+.aurora .b2{ background:radial-gradient(circle at 30% 30%, var(--aur2, var(--flow)), transparent 64%); top:18%; right:-12%; animation:drift2 56s var(--ease) infinite alternate; }
+.aurora .b3{ background:radial-gradient(circle at 30% 30%, var(--aur3, #14c48a), transparent 66%); bottom:-22%; left:22%; animation:drift3 64s var(--ease) infinite alternate; }
 @keyframes drift1{ from{transform:translate(0,0) scale(1)} to{transform:translate(12vw,10vh) scale(1.2)} }
 @keyframes drift2{ from{transform:translate(0,0) scale(1.1)} to{transform:translate(-14vw,8vh) scale(.9)} }
 @keyframes drift3{ from{transform:translate(0,0) scale(1)} to{transform:translate(8vw,-12vh) scale(1.25)} }
+/* Pause the whole backdrop when the tab is hidden, during drags, and during the intro. */
+.bg-paused .aurora .blob, .bg-paused .rays, .bg-paused .rays::after{ animation-play-state:paused !important; }
 
 /* ---------- volumetric light rays ---------- */
 .rays{ position:fixed; inset:-60%; z-index:0; pointer-events:none; mix-blend-mode:screen; opacity:.5;
   background:
     repeating-conic-gradient(from 0deg at 50% -10%,
-      rgba(43,255,154,.09) 0deg, rgba(43,255,154,0) 3deg 9deg, rgba(43,255,154,.07) 12deg 13deg, rgba(43,255,154,0) 16deg 24deg);
-  filter:blur(10px); animation:ray-sweep 60s linear infinite; }
+      color-mix(in srgb, var(--neon) 9%, transparent) 0deg, transparent 3deg 9deg,
+      color-mix(in srgb, var(--neon) 7%, transparent) 12deg 13deg, transparent 16deg 24deg);
+  filter:blur(10px); will-change:transform; animation:ray-sweep 90s linear infinite; }
 .rays::after{ content:""; position:absolute; inset:0; mix-blend-mode:screen; opacity:.6;
   background:repeating-conic-gradient(from 180deg at 50% 0%,
-    rgba(67,224,255,.06) 0deg, rgba(67,224,255,0) 4deg 14deg); filter:blur(14px);
-  animation:ray-sweep 90s linear infinite reverse; }
+    color-mix(in srgb, var(--flow) 6%, transparent) 0deg, transparent 4deg 14deg); filter:blur(14px);
+  will-change:transform; animation:ray-sweep 140s linear infinite reverse; }
 @keyframes ray-sweep{ to{ transform:rotate(360deg); } }
 
 .vignette{ position:fixed; inset:0; z-index:1; pointer-events:none;
   background:radial-gradient(130% 100% at 50% 30%, transparent 48%, rgba(2,5,4,.72) 100%); }
-@media (prefers-reduced-motion: reduce){ .aurora .blob, .rays, .rays::after{ animation:none; } }
+/* Reduce ≠ remove: near-zero durations (not 0) so animationend/transitionend still fire. */
+@media (prefers-reduced-motion: reduce){
+  *, *::before, *::after{ animation-duration:0.01ms !important; animation-iteration-count:1 !important; transition-duration:0.01ms !important; }
+}
 
 .scroll, .body-scroll, .viewscroll{ overflow-y:auto; scrollbar-width:thin; scrollbar-color:rgba(120,255,190,.22) transparent; }
 .scroll::-webkit-scrollbar, .body-scroll::-webkit-scrollbar, .viewscroll::-webkit-scrollbar{ width:6px; }
@@ -98,7 +119,9 @@ body{ background:var(--bg); color:var(--text); overflow:hidden;
 .cols-3{ grid-template-columns:repeat(3,1fr); }
 .cols-4{ grid-template-columns:repeat(4,1fr); }
 @media (max-width:1000px){ .cols-3,.cols-4{ grid-template-columns:repeat(2,1fr); } }
-.card{ border-radius:var(--r); padding:20px; animation:rise .55s var(--ease-out) both; display:flex; flex-direction:column; min-height:0; }
+.card{ border-radius:var(--r); padding:20px; animation:rise .55s var(--ease-out) both; display:flex; flex-direction:column; min-height:0;
+  contain:layout style;                              /* card DOM churn can't invalidate siblings */
+  animation-delay:calc(var(--i, 0) * 60ms); }        /* entrance stagger (set per-card by JS)   */
 .card.span-2{ grid-column:span 2; }
 .card .ch{ display:flex; align-items:center; gap:9px; font-size:12px; font-weight:700; letter-spacing:.8px; text-transform:uppercase; color:var(--muted); margin-bottom:14px; }
 .card .ch svg{ width:15px; height:15px; }
@@ -827,3 +850,90 @@ td.num,th.num{ text-align:right; font-variant-numeric:tabular-nums; }
   background:linear-gradient(180deg,#5cffb0,#1fe98a); color:#04231a; box-shadow:0 5px 16px var(--neon-glow); }
 .cp-in .cp-send svg{ width:19px; height:19px; }
 @media (prefers-reduced-motion: reduce){ .cp-orb.fly,.cp-orb.boom,.cp-panel,.cp-panel.show{ animation:none; transition:none; } }
+
+/* ===================== EDIT MODE (customize layout) ===================== */
+.edit-fab{ position:fixed; top:16px; right:18px; z-index:70; width:40px; height:40px; border-radius:13px;
+  display:flex; align-items:center; justify-content:center; cursor:pointer;
+  background:var(--glass-rail); border:1px solid var(--hair); color:var(--muted);
+  backdrop-filter:var(--blur); -webkit-backdrop-filter:var(--blur);
+  box-shadow:0 8px 26px rgba(0,0,0,.35); transition:color .2s, border-color .2s, transform .25s var(--spring); }
+.edit-fab svg{ width:18px; height:18px; }
+.edit-fab:hover{ color:var(--text); transform:scale(1.07); }
+body.editing .edit-fab{ color:#04231a; background:linear-gradient(180deg, var(--neon-2), var(--neon));
+  border-color:var(--neon-2); box-shadow:0 6px 24px var(--neon-glow); }
+
+/* iOS-style jiggle: ±1.2-1.5°, .22-.33s alternate, mirrored keyframes for odds/evens,
+   off-center transform-origins so rotation reads as a wobble. Per-card negative
+   animation-delay + duration are randomized in JS so nothing shakes in sync. */
+@keyframes jiggle-a{ 0%{ transform:rotate(-1.1deg); } 100%{ transform:rotate(1.4deg); } }
+@keyframes jiggle-b{ 0%{ transform:rotate(1.1deg); } 100%{ transform:rotate(-1.4deg); } }
+body.editing .card[data-w]{ will-change:transform; cursor:grab; user-select:none; }
+body.editing .card[data-w]:nth-child(2n){ animation:jiggle-a .28s ease-in-out infinite alternate; transform-origin:50% 10%; }
+body.editing .card[data-w]:nth-child(2n+1){ animation:jiggle-b .24s ease-in-out infinite alternate; transform-origin:30% 6%; }
+body.editing .card[data-w] > *:not(.ch){ pointer-events:none; }   /* widgets are handles, not UIs, while editing */
+
+/* Drag lift: scale + pre-rendered shadow faded via ::after (never animate box-shadow). */
+.card[data-w]{ position:relative; }
+.card[data-w]::after{ content:""; position:absolute; inset:0; border-radius:var(--r); pointer-events:none;
+  box-shadow:0 24px 70px rgba(0,0,0,.6), 0 0 40px var(--neon-glow); opacity:0; transition:opacity .25s; }
+.card.lifting{ animation:none !important; cursor:grabbing; z-index:40;
+  transform:scale(1.07); transition:none; }
+.card.lifting::after{ opacity:1; }
+.card.drop-settle{ transition:transform var(--spring-dur) var(--spring); }
+
+/* Corner span-resize handle (edit mode only) */
+.rz-corner{ position:absolute; right:6px; bottom:6px; width:18px; height:18px; border-radius:6px;
+  display:none; align-items:center; justify-content:center; cursor:ew-resize; color:var(--dim);
+  background:rgba(0,0,0,.3); border:1px solid var(--hair); z-index:5; pointer-events:auto; }
+.rz-corner svg{ width:11px; height:11px; }
+body.editing .rz-corner{ display:flex; }
+.rz-corner:hover{ color:var(--neon); border-color:var(--neon); }
+body.editing .spanbtn{ display:inline-flex; }
+
+/* Theme strip: slides up while editing */
+.theme-strip{ position:fixed; left:50%; bottom:18px; transform:translate(-50%, 90px); z-index:70;
+  display:flex; gap:10px; align-items:center; padding:10px 14px; border-radius:16px;
+  background:var(--glass-rail); border:1px solid var(--hair);
+  backdrop-filter:var(--blur); -webkit-backdrop-filter:var(--blur);
+  box-shadow:0 14px 44px rgba(0,0,0,.5); transition:transform .45s var(--spring); }
+body.editing .theme-strip{ transform:translate(-50%, 0); }
+.tchip{ width:34px; height:34px; border-radius:50%; cursor:pointer; border:2px solid transparent;
+  transition:transform .25s var(--spring), border-color .2s; }
+.tchip:hover{ transform:scale(1.15); }
+.tchip.on{ border-color:#fff; transform:scale(1.12); }
+.tchip-custom{ display:flex; align-items:center; justify-content:center; color:var(--muted);
+  background:conic-gradient(red, yellow, lime, cyan, blue, magenta, red); }
+.theme-strip .ts-label{ font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; margin-right:2px; }
+
+/* ===================== INTRO (logo spin + sparks + welcome wipe) ===================== */
+.intro{ position:fixed; inset:0; z-index:99; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:34px; background:
+    radial-gradient(90% 70% at 50% 40%, color-mix(in srgb, var(--neon) 9%, #04070a) 0%, #04070a 70%);
+  cursor:pointer; }
+.intro.out{ animation:intro-exit .55s cubic-bezier(.7,0,.3,1) forwards; }
+@keyframes intro-exit{ to{ clip-path:inset(0 0 100% 0); } }
+.intro canvas{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+.intro-logo{ width:120px; height:120px; opacity:0; animation:intro-logo-in 2.4s var(--ease-out) forwards; }
+@keyframes intro-logo-in{
+  0%{ opacity:0; transform:scale(.35) rotate(-540deg); }
+  38%{ opacity:1; transform:scale(1.12) rotate(8deg); }
+  52%{ transform:scale(.98) rotate(-3deg); }
+  66%{ transform:scale(1.02) rotate(1deg); }
+  80%,100%{ opacity:1; transform:scale(1) rotate(0); } }
+.intro-word{ font-size:clamp(34px, 5.5vw, 64px); font-weight:800; letter-spacing:-.5px; line-height:1.1;
+  background:linear-gradient(92deg, var(--neon), var(--flow), var(--violet), var(--neon));
+  background-size:220% auto; -webkit-background-clip:text; background-clip:text; color:transparent;
+  animation:word-sheen 2.6s linear infinite;
+  -webkit-mask-image:linear-gradient(100deg, #000 46%, transparent 54%); mask-image:linear-gradient(100deg, #000 46%, transparent 54%);
+  -webkit-mask-size:260% 100%; mask-size:260% 100%;
+  -webkit-mask-position:100% 0; mask-position:100% 0; opacity:0; }
+.intro.wordin .intro-word{ opacity:1; animation:word-sheen 2.6s linear infinite, word-wipe .8s cubic-bezier(.3,.9,.3,1) forwards; }
+@keyframes word-wipe{ from{ -webkit-mask-position:100% 0; mask-position:100% 0; } to{ -webkit-mask-position:0% 0; mask-position:0% 0; } }
+@keyframes word-sheen{ to{ background-position:220% center; } }
+.intro-word small{ display:block; font-size:.32em; font-weight:600; letter-spacing:.42em; text-transform:uppercase;
+  text-align:center; margin-bottom:10px; }
+.intro-skip{ position:absolute; bottom:26px; font-size:11px; color:var(--dim); letter-spacing:.4px; opacity:0; animation:fade-in .6s 1.4s forwards; }
+@keyframes fade-in{ to{ opacity:1; } }
+
+/* Post-intro card entrance: stagger driven by --i (set in JS), capped in JS at ~9 steps. */
+.stagger .card{ animation:rise .5s var(--ease-out) both; animation-delay:calc(var(--i, 0) * 60ms); }

@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import controller, gcal, gmail, google_auth, health, market_outlook, meetings, networth, paycheck, picks, portfolio, profile, profile_seed, reminders, resume, resume_corpus, resume_templates, soccer, soccer_lineups, yahoo
+from . import controller, gcal, gmail, google_auth, health, market_outlook, meetings, networth, paycheck, picks, portfolio, profile, profile_seed, reminders, resume, resume_corpus, resume_templates, soccer, soccer_lineups, user_config, yahoo
 from .bus import EventBus
 from .claude_bridge import (
     CALENDAR_COMMAND, ClaudeBridge, ClaudeError, DRAFT_REVISE,
@@ -785,6 +785,17 @@ def create_app() -> FastAPI:
         store.set_setting(body.key, body.value)
         return {"key": body.key, "value": body.value}
 
+    # ---- User config (theme / icons / layout / intro — hand-editable JSON file) ----
+    @app.get("/api/config")
+    async def get_user_config() -> dict:
+        return user_config.current()
+
+    @app.put("/api/config")
+    async def put_user_config(body: dict) -> dict:
+        cfg = user_config.patch(body)
+        bus.publish("config_changed", {"source": "api"})
+        return cfg
+
     # ---- Google connection ----
     @app.get("/api/google/status")
     async def google_status() -> dict:
@@ -1463,6 +1474,8 @@ def create_app() -> FastAPI:
         except Exception:
             log.exception("profile seed failed")
         asyncio.create_task(reminders.scheduler(store, bus))
+        user_config.load(store)                      # migrate legacy layout on first boot
+        asyncio.create_task(user_config.watch(bus))  # hot-reload on external file edits
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
