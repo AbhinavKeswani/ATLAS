@@ -1460,6 +1460,16 @@ def create_app() -> FastAPI:
 
     app.mount("/static", StaticFiles(directory=_WEB_DIR), name="static")
 
+    @app.middleware("http")
+    async def _no_stale_ui(request, call_next):
+        # Localhost app: a stale cached app.js/styles.css costs far more than the
+        # few KB saved — force revalidation on every load so edits always land.
+        resp = await call_next(request)
+        p = request.url.path
+        if p.startswith("/static") or p == "/":
+            resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return resp
+
     @app.on_event("startup")
     async def _startup() -> None:
         try:

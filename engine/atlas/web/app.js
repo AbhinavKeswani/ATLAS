@@ -2720,7 +2720,7 @@ function playIntro() {
 
   const elx = document.createElement("div");
   elx.className = "intro";
-  elx.innerHTML = `<canvas></canvas>
+  elx.innerHTML = `
     <svg class="intro-logo" viewBox="0 0 40 40" fill="none">
       <circle cx="20" cy="20" r="18" stroke="url(#ilg)" stroke-width="2.2"/>
       <path d="M20 6 C12 14, 28 26, 20 34" stroke="var(--neon)" stroke-width="2.4" fill="none" stroke-linecap="round"/>
@@ -2729,67 +2729,100 @@ function playIntro() {
     <div class="intro-word"><small>welcome to</small>ATLAS</div>
     <div class="intro-skip">click anywhere to skip</div>`;
   document.body.appendChild(elx);
+  // Canvas + flash live on <body>, above the overlay: explosion debris keeps raining
+  // over the real dashboard while the flash fades — that's the reveal.
+  const cv = document.createElement("canvas");
+  cv.style.cssText = "position:fixed;inset:0;z-index:101;pointer-events:none;width:100%;height:100%";
+  document.body.appendChild(cv);
+  const flash = document.createElement("div");
+  flash.className = "intro-flash";
+  document.body.appendChild(flash);
 
-  // --- sparks: pooled particles, additive dots, self-stopping rAF (research spec) ---
-  const cv = elx.querySelector("canvas"), cx = cv.getContext("2d");
+  const cx = cv.getContext("2d");
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   cv.width = innerWidth * dpr; cv.height = innerHeight * dpr; cx.scale(dpr, dpr);
   const cs = getComputedStyle(document.documentElement);
   const colors = ["--neon", "--neon-2", "--flow", "--violet"].map((v) => cs.getPropertyValue(v).trim()).filter(Boolean);
   const pool = INTRO.pool; pool.length = 0;
+  const logo = elx.querySelector(".intro-logo");
+  const CLIMAX = 1.9;                                // seconds of accelerating build-up
   const t0 = performance.now();
-  INTRO.emit = true;
+  let boomed = false, done = false;
 
-  function burst(x, y, n, angle) {
+  function burst(x, y, n, angle, spread, speed) {
     for (let i = 0; i < n; i++) {
-      const a = angle + (Math.random() - 0.5) * 0.9;
-      const s = 2.2 + Math.random() * 5;
+      const a = angle + (Math.random() - 0.5) * spread;
+      const s = (speed || 3) * (0.5 + Math.random());
       pool.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 1,
-        decay: 0.012 + Math.random() * 0.02, c: colors[(Math.random() * colors.length) | 0], r: 1 + Math.random() * 2.2 });
+        decay: 0.008 + Math.random() * 0.016, c: colors[(Math.random() * colors.length) | 0], r: 1 + Math.random() * 2.4 });
     }
   }
+
+  function boom() {
+    if (boomed) return; boomed = true;
+    const cxp = innerWidth / 2, cyp = innerHeight / 2 - 40;
+    for (let k = 0; k < 150; k++) burst(cxp, cyp, 1, Math.random() * 6.283, 0.4, 5 + Math.random() * 6);
+    elx.classList.add("boom");
+    flash.classList.add("on");
+    // Flash hits full opacity ~100ms in — swap the world out underneath it.
+    setTimeout(reveal, 140);
+  }
+
+  function reveal() {
+    if (done) return; done = true;
+    INTRO.playing = false;
+    elx.remove();
+    document.body.classList.remove("bg-paused");
+    const root = document.getElementById("view-" + active);
+    if (root) root.querySelectorAll(".card").forEach((c, i) => c.style.setProperty("--i", Math.min(i, 9)));
+    flash.addEventListener("animationend", () => flash.remove());
+    setTimeout(() => flash.remove(), 1200);          // safety if animationend is missed
+  }
+
   function tick(now) {
-    cx.clearRect(0, 0, innerWidth, innerHeight);
-    // Emit tangentially off the spinning logo rim for the first ~1.4s.
     const t = (now - t0) / 1000;
-    if (INTRO.emit && t < 1.4 && pool.length < 220) {
-      const cxp = innerWidth / 2, cyp = innerHeight / 2 - 40;
-      const ang = -Math.PI / 2 + t * 9;             // matches the -540° spin feel
-      burst(cxp + Math.cos(ang) * 62, cyp + Math.sin(ang) * 62, 3, ang + Math.PI / 2);
+    const cxp = innerWidth / 2, cyp = innerHeight / 2 - 40;
+
+    if (!boomed) {
+      // Accelerating spin: θ ∝ t² (3.2 turns by the climax), scale eases in over 350ms.
+      const prog = Math.min(1, t / CLIMAX);
+      const theta = 1160 * prog * prog;
+      const scale = 1 - Math.pow(1 - Math.min(1, t / 0.35), 2);
+      logo.style.transform = `rotate(${theta}deg) scale(${(0.4 + 0.6 * scale).toFixed(3)})`;
+      // Spark emission ramps with the spin: a trickle at first, a storm near detonation.
+      const rate = 1 + Math.floor(prog * prog * 14);
+      if (pool.length < 420) {
+        const ang = -Math.PI / 2 + (theta * Math.PI / 180);
+        const r = 62 * (0.4 + 0.6 * scale);
+        burst(cxp + Math.cos(ang) * r, cyp + Math.sin(ang) * r, rate, ang + Math.PI / 2, 0.9, 2.5 + prog * 3);
+        burst(cxp - Math.cos(ang) * r, cyp - Math.sin(ang) * r, Math.ceil(rate / 2), ang - Math.PI / 2, 0.9, 2.5 + prog * 3);
+      }
+      if (t >= CLIMAX) boom();
     }
+
+    cx.clearRect(0, 0, innerWidth, innerHeight);
     cx.globalCompositeOperation = "lighter";
     for (let i = pool.length - 1; i >= 0; i--) {
       const p = pool[i];
-      p.vy += 0.06; p.vx *= 0.986; p.vy *= 0.986;
+      p.vy += 0.05; p.vx *= 0.987; p.vy *= 0.987;
       p.x += p.vx; p.y += p.vy; p.life -= p.decay;
       if (p.life <= 0) { pool.splice(i, 1); continue; }
       cx.globalAlpha = p.life;
       cx.beginPath(); cx.arc(p.x, p.y, p.r * p.life, 0, 6.283); cx.fillStyle = p.c; cx.fill();
     }
     cx.globalAlpha = 1; cx.globalCompositeOperation = "source-over";
-    INTRO.raf = (pool.length || (INTRO.emit && t < 1.4)) ? requestAnimationFrame(tick) : null;
+    if (pool.length || !boomed) INTRO.raf = requestAnimationFrame(tick);
+    else { INTRO.raf = null; cv.remove(); }          // debris settled → drop the canvas
   }
   INTRO.raf = requestAnimationFrame(tick);
 
-  const t1 = setTimeout(() => elx.classList.add("wordin"), 800);
-  const t2 = setTimeout(end, 2450);
-  elx.onclick = end;
-
-  function end() {
-    if (!INTRO.playing) return;
-    INTRO.playing = false; INTRO.emit = false;
-    clearTimeout(t1); clearTimeout(t2);
-    elx.classList.add("out");
-    setTimeout(() => {
-      if (INTRO.raf) { cancelAnimationFrame(INTRO.raf); INTRO.raf = null; }
-      pool.length = 0;
-      elx.remove();                                  // drop the full-screen layer entirely
-      document.body.classList.remove("bg-paused");
-      // Choreograph the dashboard entrance behind the departing wipe.
-      const root = document.getElementById("view-" + active);
-      if (root) root.querySelectorAll(".card").forEach((c, i) => c.style.setProperty("--i", Math.min(i, 9)));
-    }, 540);
-  }
+  const t1 = setTimeout(() => elx.classList.add("wordin"), 750);
+  elx.onclick = () => {                              // skip: no explosion, straight to the app
+    clearTimeout(t1);
+    if (INTRO.raf) { cancelAnimationFrame(INTRO.raf); INTRO.raf = null; }
+    pool.length = 0; cv.remove(); flash.remove();
+    boomed = true; reveal();
+  };
 }
 
 // ---------- boot ----------

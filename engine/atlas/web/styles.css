@@ -913,13 +913,19 @@ body.editing .theme-strip{ transform:translate(-50%, 0); }
 .intro.out{ animation:intro-exit .55s cubic-bezier(.7,0,.3,1) forwards; }
 @keyframes intro-exit{ to{ clip-path:inset(0 0 100% 0); } }
 .intro canvas{ position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
-.intro-logo{ width:120px; height:120px; opacity:0; animation:intro-logo-in 2.4s var(--ease-out) forwards; }
-@keyframes intro-logo-in{
-  0%{ opacity:0; transform:scale(.35) rotate(-540deg); }
-  38%{ opacity:1; transform:scale(1.12) rotate(8deg); }
-  52%{ transform:scale(.98) rotate(-3deg); }
-  66%{ transform:scale(1.02) rotate(1deg); }
-  80%,100%{ opacity:1; transform:scale(1) rotate(0); } }
+/* Spin is JS-driven (accelerating θ ∝ t² needs script); CSS handles the detonation. */
+.intro-logo{ width:120px; height:120px; will-change:transform; }
+.intro.boom .intro-logo{ animation:logo-boom .42s cubic-bezier(.55, 0, .9, .6) forwards; }
+@keyframes logo-boom{ to{ transform:scale(3.4) rotate(50deg); opacity:0; } }
+.intro.boom .intro-word{ animation:word-boom .36s ease-in forwards; }
+@keyframes word-boom{ to{ transform:scale(1.55); opacity:0; } }
+/* The theme-color flash IS the reveal: it peaks fully opaque (screen = theme gradient),
+   the intro overlay is removed underneath at the peak, then the flash fades off the
+   real dashboard. Opacity-only → compositor-cheap despite being full-screen. */
+.intro-flash{ position:fixed; inset:0; z-index:100; pointer-events:none; opacity:0;
+  background:radial-gradient(120% 120% at 50% 44%, var(--neon-2) 0%, var(--neon) 55%, var(--aur3, var(--neon)) 100%); }
+.intro-flash.on{ animation:flash-wipe .8s cubic-bezier(.25, 0, .35, 1) forwards; }
+@keyframes flash-wipe{ 0%{ opacity:0; } 12%{ opacity:1; } 30%{ opacity:1; } 100%{ opacity:0; } }
 .intro-word{ font-size:clamp(34px, 5.5vw, 64px); font-weight:800; letter-spacing:-.5px; line-height:1.1;
   background:linear-gradient(92deg, var(--neon), var(--flow), var(--violet), var(--neon));
   background-size:220% auto; -webkit-background-clip:text; background-clip:text; color:transparent;
