@@ -2520,8 +2520,25 @@ Object.keys(VIEWS).forEach((k) => {
 });
 connectWS();
 document.querySelector(".logo").onclick = openCopilot;   // the orb → Atlas Copilot
+
+// Deep links: #view=picks&pick=KLAC&expand=1&scroll=mdna&scrolly=900
+// Jump straight to a tab / breakout / expanded chart from a URL — also what the
+// headless-Chrome README screenshot pipeline drives.
+function applyDeepLink() {
+  const hp = new URLSearchParams(location.hash.slice(1));
+  const v = hp.get("view");
+  if (!v || !VIEWS[v]) return;
+  setTimeout(() => go(v), 250);
+  if (hp.get("scrolly")) setTimeout(() => { const s = document.getElementById("view-" + v); if (s) s.scrollTop = +hp.get("scrolly"); }, 1800);
+  if (hp.get("pick")) setTimeout(() => openPick(hp.get("pick")), 1300);
+  if (hp.get("expand")) setTimeout(() => { try { expandChart(); } catch (e) {} }, 6500);
+  if (hp.get("scroll") === "mdna") setTimeout(() => { const n = document.getElementById("dw-mdnaread"); if (n) n.scrollIntoView({ block: "start" }); }, 7000);
+}
+window.addEventListener("hashchange", applyDeepLink);
+
 layoutBoot().finally(() => {
   go("home");
+  applyDeepLink();
   // Reingest Google Calendar on every dashboard load — pulls ALL visible calendars,
   // then repaints whatever view is active. Silently skipped when Google isn't connected.
   api("/calendar/sync", { method: "POST" }).then(() => render(active)).catch(() => {});
